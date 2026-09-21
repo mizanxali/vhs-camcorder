@@ -26,14 +26,23 @@ nonisolated final class CameraSession: NSObject, AVCaptureVideoDataOutputSampleB
         super.init()
     }
 
-    /// Returns the zoom range (in display factors, 1 = the main wide lens) of the active camera.
-    func start() async -> ClosedRange<CGFloat> {
-        guard await AVCaptureDevice.requestAccess(for: .video) else { return 1...1 }
+    struct Capabilities: Sendable {
+        var zoomRange: ClosedRange<CGFloat> = 1...1   // display factors, 1 = the main wide lens
+        var hasTorch = false
+    }
+
+    /// Queue only.
+    private var capabilities: Capabilities {
+        Capabilities(zoomRange: zoomRange, hasTorch: device?.hasTorch ?? false)
+    }
+
+    func start() async -> Capabilities {
+        guard await AVCaptureDevice.requestAccess(for: .video) else { return Capabilities() }
         _ = await AVCaptureDevice.requestAccess(for: .audio)
         return await onQueue {
             self.configure()
             self.session.startRunning()
-            return self.zoomRange
+            return self.capabilities
         }
     }
 
@@ -88,14 +97,21 @@ nonisolated final class CameraSession: NSObject, AVCaptureVideoDataOutputSampleB
         return true
     }
 
-    /// Returns the new camera's zoom range in display factors.
-    func flipCamera() async -> ClosedRange<CGFloat> {
+    func flipCamera() async -> Capabilities {
         await onQueue {
             self.session.beginConfiguration()
             _ = self.addCamera(self.position == .back ? .front : .back)
             self.session.commitConfiguration()
             self.applyRotation()
-            return self.zoomRange
+            return self.capabilities
+        }
+    }
+
+    func setTorch(_ on: Bool) {
+        queue.async {
+            guard let device = self.device, device.hasTorch, (try? device.lockForConfiguration()) != nil else { return }
+            device.torchMode = on ? .on : .off
+            device.unlockForConfiguration()
         }
     }
 

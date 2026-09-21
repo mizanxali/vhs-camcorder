@@ -14,6 +14,8 @@ struct CamcorderView: View {
     @State private var toast: String?
     @State private var zoom: CGFloat = 1
     @State private var zoomRange: ClosedRange<CGFloat> = 1...1
+    @State private var hasTorch = false
+    @State private var torchOn = false
     @State private var pinchBase: CGFloat?
     private static let zoomPresets: [CGFloat] = [0.5, 1, 2, 3]
 
@@ -32,7 +34,7 @@ struct CamcorderView: View {
             if let scene = UIApplication.shared.connectedScenes.first(where: { $0 is UIWindowScene }) as? UIWindowScene {
                 camera.follow(scene)
             }
-            zoomRange = await camera.start()
+            apply(await camera.start())
         }
         .onChange(of: scenePhase) { _, phase in
             if phase != .active { stop() }
@@ -96,10 +98,7 @@ struct CamcorderView: View {
         VStack(spacing: 32) {
             shutterButton
             Button {
-                Task {
-                    zoomRange = await camera.flipCamera()
-                    zoom = 1
-                }
+                Task { apply(await camera.flipCamera()) }
             } label: {
                 Image(systemName: "arrow.triangle.2.circlepath.camera")
                     .font(.system(size: 18, weight: .medium))
@@ -111,7 +110,30 @@ struct CamcorderView: View {
             .buttonStyle(ShutterStyle())
             .disabled(isRecording)
             .opacity(isRecording ? 0.3 : 1)
+
+            if hasTorch {
+                Button {
+                    torchOn.toggle()
+                    camera.setTorch(torchOn)
+                } label: {
+                    Image(systemName: torchOn ? "bolt.fill" : "bolt.slash")
+                        .font(.system(size: 16, weight: .medium))
+                        .foregroundStyle(torchOn ? Color(red: 0.95, green: 0.75, blue: 0.35) : Self.label.opacity(0.6))
+                        .frame(width: 48, height: 48)
+                        .background(Circle().fill(Color(red: 0.1, green: 0.095, blue: 0.09)))
+                        .overlay(Circle().strokeBorder(.black.opacity(0.7), lineWidth: 1.5))
+                }
+                .buttonStyle(ShutterStyle())
+            }
         }
+    }
+
+    /// Resets per-camera UI state after start or flip.
+    private func apply(_ capabilities: CameraSession.Capabilities) {
+        zoomRange = capabilities.zoomRange
+        hasTorch = capabilities.hasTorch
+        zoom = 1
+        torchOn = false
     }
 
     // MARK: Zoom
