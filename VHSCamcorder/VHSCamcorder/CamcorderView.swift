@@ -9,14 +9,22 @@ struct CamcorderView: View {
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
-            PreviewView(layer: camera.displayLayer, onLayout: camera.updateRotation)
+            PreviewView(layer: camera.displayLayer)
                 .aspectRatio(4 / 3, contentMode: .fit)
         }
         .overlay(alignment: .trailing) {
-            recordButton.padding(.trailing, 24)
+            VStack(spacing: 32) {
+                recordButton
+                flipButton
+            }
+            .padding(.trailing, 24)
         }
+        .sensoryFeedback(.impact, trigger: isRecording)
         .task {
             UIApplication.shared.isIdleTimerDisabled = true
+            if let scene = UIApplication.shared.connectedScenes.first(where: { $0 is UIWindowScene }) as? UIWindowScene {
+                camera.follow(scene)
+            }
             await camera.start()
         }
         .onChange(of: scenePhase) { _, phase in
@@ -40,6 +48,18 @@ struct CamcorderView: View {
         }
         .buttonStyle(.plain)
         .animation(.easeInOut(duration: 0.15), value: isRecording)
+    }
+
+    private var flipButton: some View {
+        Button(action: camera.flipCamera) {
+            Image(systemName: "arrow.triangle.2.circlepath.camera")
+                .font(.title)
+                .foregroundStyle(.white)
+                .frame(width: 56, height: 56)
+        }
+        .buttonStyle(.plain)
+        .disabled(isRecording)
+        .opacity(isRecording ? 0.3 : 1)
     }
 
     private func stop() {

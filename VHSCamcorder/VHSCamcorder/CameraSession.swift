@@ -14,6 +14,9 @@ nonisolated final class CameraSession: NSObject, AVCaptureVideoDataOutputSampleB
     private let queue = DispatchQueue(label: "camera.frames")
     private let filter = VHSFilter()
     private var recorder: VideoRecorder?   // touched only on `queue`
+    private var position: AVCaptureDevice.Position = .back   // queue only
+    private var rotationAngle: CGFloat = 0                    // queue only, for the back camera
+    @MainActor private var geometryObservation: NSKeyValueObservation?
 
     @MainActor override init() {
         displayLayer = AVSampleBufferDisplayLayer()
@@ -28,7 +31,6 @@ nonisolated final class CameraSession: NSObject, AVCaptureVideoDataOutputSampleB
             self.configure()
             self.session.startRunning()
         }
-        await updateRotation()
     }
 
     private func configure() {
@@ -36,15 +38,7 @@ nonisolated final class CameraSession: NSObject, AVCaptureVideoDataOutputSampleB
         defer { session.commitConfiguration() }
         session.sessionPreset = .hd1920x1080
 
-        guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back),
-              let input = try? AVCaptureDeviceInput(device: device),
-              session.canAddInput(input) else { return }
-        session.addInput(input)
-        if (try? device.lockForConfiguration()) != nil {
-            device.activeVideoMinFrameDuration = CMTime(value: 1, timescale: 30)
-            device.activeVideoMaxFrameDuration = CMTime(value: 1, timescale: 30)
-            device.unlockForConfiguration()
-        }
+        guard addCamera(position) else { return }
 
         videoOutput.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
         videoOutput.alwaysDiscardsLateVideoFrames = true
@@ -61,17 +55,54 @@ nonisolated final class CameraSession: NSObject, AVCaptureVideoDataOutputSampleB
         }
     }
 
-    /// Keeps captured frames upright in whichever landscape orientation the phone is held. Call after layout.
-    @MainActor func updateRotation() {
-        let orientation = UIApplication.shared.connectedScenes
-            .compactMap { ($0 as? UIWindowScene)?.effectiveGeometry.interfaceOrientation }
-            .first ?? .landscapeRight
-        let angle: CGFloat = orientation == .landscapeLeft ? 180 : 0
+    /// Replaces the video input with the camera at `position`, locked to 30fps. Caller holds beginConfiguration.
+    private func addCamera(_ position: AVCaptureDevice.Position) -> Bool {
+        guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: position),
+              let input = try? AVCaptureDeviceInput(device: device) else { return false }
+        session.inputs.compactMap { $0 as? AVCaptureDeviceInput }
+            .filter { $0.device.hasMediaType(.video) }
+            .forEach(session.removeInput)
+        guard session.canAddInput(input) else { return false }
+        session.addInput(input)
+        if (try? device.lockForConfiguration()) != nil {
+            device.activeVideoMinFrameDuration = CMTime(value: 1, timescale: 30)
+            device.activeVideoMaxFrameDuration = CMTime(value: 1, timescale: 30)
+            device.unlockForConfiguration()
+        }
+        self.position = position
+        return true
+    }
+
+    func flipCamera() {
         queue.async {
-            guard let connection = self.videoOutput.connection(with: .video),
-                  connection.isVideoRotationAngleSupported(angle) else { return }
+            self.session.beginConfiguration()
+            _ = self.addCamera(self.position == .back ? .front : .back)
+            self.session.commitConfiguration()
+            self.applyRotation()
+        }
+    }
+
+    /// Keeps captured frames upright by following the scene's interface orientation (landscape only).
+    @MainActor func follow(_ scene: UIWindowScene) {
+        geometryObservation = scene.observe(\.effectiveGeometry, options: [.initial, .new]) { [weak self] scene, _ in
+            let orientation = MainActor.assumeIsolated { scene.effectiveGeometry.interfaceOrientation }
+            self?.queue.async {
+                self?.rotationAngle = orientation == .landscapeLeft ? 180 : 0
+                self?.applyRotation()
+            }
+        }
+    }
+
+    /// Queue only. The connection is recreated on every input change, so this runs after flips too.
+    private func applyRotation() {
+        guard let connection = videoOutput.connection(with: .video) else { return }
+        // The front sensor is mounted 180° from the back one.
+        let angle = position == .front ? 180 - rotationAngle : rotationAngle
+        if connection.isVideoRotationAngleSupported(angle) {
             connection.videoRotationAngle = angle
         }
+        connection.automaticallyAdjustsVideoMirroring = false
+        connection.isVideoMirrored = position == .front
     }
 
     // MARK: Recording
