@@ -121,12 +121,14 @@ nonisolated final class CameraSession: NSObject, AVCaptureVideoDataOutputSampleB
         return true
     }
 
-    func stopRecording() {
-        queue.async {
-            guard let recorder = self.recorder else { return }
-            self.recorder = nil
-            Task { await recorder.finish() }
+    /// Finalizes the clip and returns true once it is saved to Photos.
+    func stopRecording() async -> Bool {
+        let recorder: VideoRecorder? = queue.sync {
+            defer { self.recorder = nil }
+            return self.recorder
         }
+        guard let recorder else { return false }
+        return await recorder.finish()
     }
 
     // MARK: Capture callbacks (on `queue`)

@@ -36,19 +36,24 @@ nonisolated final class VideoRecorder: @unchecked Sendable {
         audio.append(sampleBuffer)
     }
 
-    func finish() async {
+    /// Returns true once the clip is in Photos.
+    func finish() async -> Bool {
+        defer { try? FileManager.default.removeItem(at: url) }
         guard startTime != nil else {
             writer.cancelWriting()
-            return
+            return false
         }
         video.markAsFinished()
         audio.markAsFinished()
         await writer.finishWriting()
-        if writer.status == .completed {
-            try? await PHPhotoLibrary.shared().performChanges {
+        guard writer.status == .completed else { return false }
+        do {
+            try await PHPhotoLibrary.shared().performChanges {
                 PHAssetChangeRequest.creationRequestForAssetFromVideo(atFileURL: self.url)
             }
+            return true
+        } catch {
+            return false
         }
-        try? FileManager.default.removeItem(at: url)
     }
 }
