@@ -106,8 +106,9 @@ nonisolated final class CameraSession: NSObject, AVCaptureVideoDataOutputSampleB
             return
         }
         let time = sampleBuffer.presentationTimeStamp
+        let elapsed = recorder.map { $0.startTime.map { time.seconds - $0.seconds } ?? 0 }
         guard let pixelBuffer = sampleBuffer.imageBuffer,
-              let rendered = filter.render(pixelBuffer),
+              let rendered = filter.render(pixelBuffer, elapsed: elapsed),
               let display = try? CMSampleBuffer(
                 imageBuffer: rendered,
                 formatDescription: CMVideoFormatDescription(imageBuffer: rendered),

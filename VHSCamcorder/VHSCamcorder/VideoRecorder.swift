@@ -8,7 +8,7 @@ nonisolated final class VideoRecorder: @unchecked Sendable {
     private let video: AVAssetWriterInput
     private let audio: AVAssetWriterInput
     private let adaptor: AVAssetWriterInputPixelBufferAdaptor
-    private var started = false
+    private(set) var startTime: CMTime?
 
     init(videoSettings: [String: Any], audioSettings: [String: Any]) throws {
         writer = try AVAssetWriter(outputURL: url, fileType: .mov)
@@ -23,21 +23,21 @@ nonisolated final class VideoRecorder: @unchecked Sendable {
     }
 
     func append(video pixelBuffer: CVPixelBuffer, at time: CMTime) {
-        if !started {
+        if startTime == nil {
             writer.startSession(atSourceTime: time)
-            started = true
+            startTime = time
         }
         guard video.isReadyForMoreMediaData else { return }
         adaptor.append(pixelBuffer, withPresentationTime: time)
     }
 
     func append(audio sampleBuffer: CMSampleBuffer) {
-        guard started, audio.isReadyForMoreMediaData else { return }
+        guard startTime != nil, audio.isReadyForMoreMediaData else { return }
         audio.append(sampleBuffer)
     }
 
     func finish() async {
-        guard started else {
+        guard startTime != nil else {
             writer.cancelWriting()
             return
         }

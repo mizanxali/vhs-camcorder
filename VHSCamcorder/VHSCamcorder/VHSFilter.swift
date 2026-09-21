@@ -10,13 +10,15 @@ nonisolated final class VHSFilter {
     private let kernel: CIKernel
     private let startTime = CACurrentMediaTime()
     private var pool: CVPixelBufferPool?
+    private let overlay = OverlayRenderer()
 
     init() {
         let url = Bundle.main.url(forResource: "default", withExtension: "metallib")!
         kernel = try! CIKernel(functionName: "vhs", fromMetalLibraryData: Data(contentsOf: url))
     }
 
-    func render(_ input: CVPixelBuffer) -> CVPixelBuffer? {
+    /// `elapsed` is nil when idle, otherwise seconds since recording started (drives the REC overlay).
+    func render(_ input: CVPixelBuffer, elapsed: TimeInterval?) -> CVPixelBuffer? {
         let source = CIImage(cvPixelBuffer: input)
         let scale = Self.outputSize.height / source.extent.height
         let scaled = source.transformed(by: .init(scaleX: scale, y: scale))
@@ -24,13 +26,15 @@ nonisolated final class VHSFilter {
         let cropped = scaled
             .cropped(to: CGRect(origin: CGPoint(x: cropX, y: 0), size: Self.outputSize))
             .transformed(by: .init(translationX: -cropX, y: 0))
+        let composed = overlay.image(elapsed: elapsed, size: Self.outputSize)
+            .composited(over: cropped)
             .clampedToExtent()
 
         let extent = CGRect(origin: .zero, size: Self.outputSize)
         guard let image = kernel.apply(
             extent: extent,
             roiCallback: { _, rect in rect.insetBy(dx: -80, dy: -2) },
-            arguments: [cropped, Float(CACurrentMediaTime() - startTime), Float(extent.width), Float(extent.height)]
+            arguments: [composed, Float(CACurrentMediaTime() - startTime), Float(extent.width), Float(extent.height)]
         ), let output = makeBuffer() else { return nil }
         context.render(image, to: output)
         return output
