@@ -12,6 +12,10 @@ struct CamcorderView: View {
     @State private var camera = CameraSession()
     @State private var isRecording = false
     @State private var toast: String?
+    @State private var zoom: CGFloat = 1
+    @State private var zoomRange: ClosedRange<CGFloat> = 1...1
+    @State private var pinchBase: CGFloat?
+    private static let zoomPresets: [CGFloat] = [0.5, 1, 2, 3]
 
     var body: some View {
         ZStack {
@@ -21,14 +25,14 @@ struct CamcorderView: View {
         }
         .overlay(alignment: .leading) { leftPanel.padding(.leading, 28) }
         .overlay(alignment: .trailing) { rightPanel.padding(.trailing, 28) }
-        .overlay(alignment: .bottom) { toastView.padding(.bottom, 20) }
+        .overlay(alignment: .top) { toastView.padding(.top, 16) }
         .sensoryFeedback(.impact, trigger: isRecording)
         .task {
             UIApplication.shared.isIdleTimerDisabled = true
             if let scene = UIApplication.shared.connectedScenes.first(where: { $0 is UIWindowScene }) as? UIWindowScene {
                 camera.follow(scene)
             }
-            await camera.start()
+            zoomRange = await camera.start()
         }
         .onChange(of: scenePhase) { _, phase in
             if phase != .active { stop() }
@@ -52,6 +56,17 @@ struct CamcorderView: View {
             }
             .shadow(color: .black.opacity(0.6), radius: 10, y: 4)
             .padding(.vertical, 12)
+            .gesture(
+                MagnifyGesture()
+                    .onChanged { value in
+                        let base = pinchBase ?? zoom
+                        pinchBase = base
+                        zoom = min(max(base * value.magnification, zoomRange.lowerBound), zoomRange.upperBound)
+                        camera.setZoom(zoom)
+                    }
+                    .onEnded { _ in pinchBase = nil }
+            )
+
     }
 
     private var leftPanel: some View {
@@ -73,19 +88,19 @@ struct CamcorderView: View {
                     .tracking(1.5)
                     .foregroundStyle(Self.label.opacity(0.28))
             }
-            VStack(spacing: 5) {
-                ForEach(0..<5, id: \.self) { _ in
-                    Capsule().fill(.black.opacity(0.35)).frame(width: 40, height: 2)
-                        .overlay(alignment: .bottom) { Capsule().fill(.white.opacity(0.04)).frame(height: 1) }
-                }
-            }
+            zoomColumn
         }
     }
 
     private var rightPanel: some View {
         VStack(spacing: 32) {
             shutterButton
-            Button(action: camera.flipCamera) {
+            Button {
+                Task {
+                    zoomRange = await camera.flipCamera()
+                    zoom = 1
+                }
+            } label: {
                 Image(systemName: "arrow.triangle.2.circlepath.camera")
                     .font(.system(size: 18, weight: .medium))
                     .foregroundStyle(Self.label.opacity(0.6))
@@ -97,6 +112,36 @@ struct CamcorderView: View {
             .disabled(isRecording)
             .opacity(isRecording ? 0.3 : 1)
         }
+    }
+
+    // MARK: Zoom
+
+    private var zoomColumn: some View {
+        let presets = Self.zoomPresets.filter { zoomRange.contains($0) }
+        let active = presets.last { $0 <= zoom + 0.01 } ?? presets.first
+        return VStack(alignment: .leading, spacing: 4) {
+            ForEach(presets, id: \.self) { preset in
+                let isActive = preset == active
+                Button {
+                    zoom = preset
+                    camera.setZoom(preset, ramped: true)
+                } label: {
+                    Text(isActive ? Self.zoomLabel(zoom) : Self.zoomLabel(preset))
+                        .font(.system(size: 11, weight: .bold, design: .monospaced))
+                        .foregroundStyle(isActive ? Self.label : Self.label.opacity(0.4))
+                        .frame(width: 44, height: 26)
+                        .background(RoundedRectangle(cornerRadius: 4).fill(.black.opacity(isActive ? 0.6 : 0.25)))
+                        .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(Self.label.opacity(isActive ? 0.35 : 0.08), lineWidth: 1))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .opacity(presets.count > 1 ? 1 : 0)
+        .animation(.easeInOut(duration: 0.15), value: active)
+    }
+
+    private static func zoomLabel(_ factor: CGFloat) -> String {
+        (factor.truncatingRemainder(dividingBy: 1) == 0 ? String(Int(factor)) : String(format: "%.1f", factor)) + "x"
     }
 
     // MARK: Shutter

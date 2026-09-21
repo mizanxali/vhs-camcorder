@@ -16,6 +16,8 @@ nonisolated final class CameraSession: NSObject, AVCaptureVideoDataOutputSampleB
     private var recorder: VideoRecorder?   // touched only on `queue`
     private var position: AVCaptureDevice.Position = .back   // queue only
     private var rotationAngle: CGFloat = 0                    // queue only, for the back camera
+    private var device: AVCaptureDevice?                      // queue only, current video device
+    private var wideFactor: CGFloat = 1                       // queue only, videoZoomFactor that displays as 1x
     @MainActor private var geometryObservation: NSKeyValueObservation?
 
     @MainActor override init() {
@@ -24,12 +26,20 @@ nonisolated final class CameraSession: NSObject, AVCaptureVideoDataOutputSampleB
         super.init()
     }
 
-    func start() async {
-        guard await AVCaptureDevice.requestAccess(for: .video) else { return }
+    /// Returns the zoom range (in display factors, 1 = the main wide lens) of the active camera.
+    func start() async -> ClosedRange<CGFloat> {
+        guard await AVCaptureDevice.requestAccess(for: .video) else { return 1...1 }
         _ = await AVCaptureDevice.requestAccess(for: .audio)
-        queue.async {
+        return await onQueue {
             self.configure()
             self.session.startRunning()
+            return self.zoomRange
+        }
+    }
+
+    private func onQueue<T: Sendable>(_ work: @escaping @Sendable () -> T) async -> T {
+        await withCheckedContinuation { continuation in
+            queue.async { continuation.resume(returning: work()) }
         }
     }
 
@@ -56,29 +66,61 @@ nonisolated final class CameraSession: NSObject, AVCaptureVideoDataOutputSampleB
     }
 
     /// Replaces the video input with the camera at `position`, locked to 30fps. Caller holds beginConfiguration.
+    /// Prefers the virtual multi-lens device so zoom covers ultra-wide through telephoto with automatic lens switching.
     private func addCamera(_ position: AVCaptureDevice.Position) -> Bool {
-        guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: position),
+        let preferred: [AVCaptureDevice.DeviceType] = [.builtInTripleCamera, .builtInDualWideCamera, .builtInDualCamera, .builtInWideAngleCamera]
+        guard let device = AVCaptureDevice.DiscoverySession(deviceTypes: preferred, mediaType: .video, position: position).devices.first,
               let input = try? AVCaptureDeviceInput(device: device) else { return false }
         session.inputs.compactMap { $0 as? AVCaptureDeviceInput }
             .filter { $0.device.hasMediaType(.video) }
             .forEach(session.removeInput)
         guard session.canAddInput(input) else { return false }
         session.addInput(input)
+        wideFactor = device.virtualDeviceSwitchOverVideoZoomFactors.first.map { CGFloat(truncating: $0) } ?? 1
         if (try? device.lockForConfiguration()) != nil {
             device.activeVideoMinFrameDuration = CMTime(value: 1, timescale: 30)
             device.activeVideoMaxFrameDuration = CMTime(value: 1, timescale: 30)
+            device.videoZoomFactor = wideFactor
             device.unlockForConfiguration()
         }
+        self.device = device
         self.position = position
         return true
     }
 
-    func flipCamera() {
-        queue.async {
+    /// Returns the new camera's zoom range in display factors.
+    func flipCamera() async -> ClosedRange<CGFloat> {
+        await onQueue {
             self.session.beginConfiguration()
             _ = self.addCamera(self.position == .back ? .front : .back)
             self.session.commitConfiguration()
             self.applyRotation()
+            return self.zoomRange
+        }
+    }
+
+    // MARK: Zoom
+
+    /// Queue only. Display factors: 1 = main wide lens, 0.5 = ultra-wide. Digital zoom capped at 10x.
+    private var zoomRange: ClosedRange<CGFloat> {
+        guard let device else { return 1...1 }
+        let lower = device.minAvailableVideoZoomFactor / wideFactor
+        let upper = min(device.maxAvailableVideoZoomFactor, wideFactor * 10) / wideFactor
+        return lower...max(lower, upper)
+    }
+
+    /// `ramped` glides to the factor (presets); otherwise it snaps (pinch).
+    func setZoom(_ display: CGFloat, ramped: Bool = false) {
+        queue.async {
+            guard let device = self.device, (try? device.lockForConfiguration()) != nil else { return }
+            let range = self.zoomRange
+            let factor = min(max(display, range.lowerBound), range.upperBound) * self.wideFactor
+            if ramped {
+                device.ramp(toVideoZoomFactor: factor, withRate: 6)
+            } else {
+                device.videoZoomFactor = factor
+            }
+            device.unlockForConfiguration()
         }
     }
 
