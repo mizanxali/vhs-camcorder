@@ -24,7 +24,7 @@ nonisolated final class OverlayRenderer {
         let seconds = Int(elapsed ?? 0)
         let recording = elapsed != nil
         let date = Self.dateFormatter.string(from: Date()).uppercased()
-        let key = "\(recording)|\(seconds)|\(date)"
+        let key = "\(recording)|\(seconds)|\(date)|\(size)"
         if let cached, cached.key == key { return cached.image }
 
         let format = UIGraphicsImageRendererFormat()

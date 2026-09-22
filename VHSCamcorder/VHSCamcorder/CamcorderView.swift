@@ -10,6 +10,7 @@ struct CamcorderView: View {
 
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.openURL) private var openURL
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
     @State private var camera = CameraSession()
     @State private var isRecording = false
     @State private var toast: String?
@@ -17,29 +18,65 @@ struct CamcorderView: View {
     @State private var zoomRange: ClosedRange<CGFloat> = 1...1
     @State private var hasTorch = false
     @State private var torchOn = false
+    @State private var landscape = false
     @State private var pinchBase: CGFloat?
     @State private var flash = false
     @State private var lastShot: UIImage?
     private static let zoomPresets: [CGFloat] = [0.5, 1, 2, 3]
 
+    /// iPhone reports a regular vertical size class only in portrait.
+    private var portrait: Bool { verticalSizeClass == .regular }
+
+    private var scene: UIWindowScene? {
+        UIApplication.shared.connectedScenes.first { $0 is UIWindowScene } as? UIWindowScene
+    }
+
     var body: some View {
         ZStack {
             LinearGradient(colors: [Self.plastic, Self.plasticDark], startPoint: .top, endPoint: .bottom)
                 .ignoresSafeArea()
-            viewfinder
+            if portrait {
+                VStack(spacing: 24) {
+                    HStack(alignment: .top) {
+                        VStack(alignment: .leading, spacing: 12) { brand(.leading); recLED }
+                        Spacer()
+                        orientationButton
+                    }
+                    viewfinder
+                    zoomColumn
+                    // Symmetric 48pt end slots keep the shutter centered even when a slot is empty.
+                    HStack(spacing: 0) {
+                        thumbnail
+                        Spacer()
+                        photoButton
+                        Spacer()
+                        shutterButton
+                        Spacer()
+                        flipButton
+                        Spacer()
+                        torchButton
+                    }
+                    Spacer()
+                }
+                .padding(.horizontal, 28)
+            } else {
+                viewfinder
+            }
         }
-        .overlay(alignment: .leading) { leftPanel.padding(.leading, 28) }
-        .overlay(alignment: .trailing) { rightPanel.padding(.trailing, 28) }
+        .overlay(alignment: .leading) { if !portrait { leftPanel.padding(.leading, 28) } }
+        .overlay(alignment: .trailing) { if !portrait { rightPanel.padding(.trailing, 28) } }
         .overlay(alignment: .top) { toastView.padding(.top, 16) }
-        .overlay(alignment: .bottomLeading) { thumbnail.padding(.leading, 28).padding(.bottom, 16) }
+        .overlay(alignment: .bottomLeading) { if !portrait { thumbnail.padding(.leading, 28).padding(.bottom, 16) } }
         .sensoryFeedback(.impact, trigger: isRecording)
         .sensoryFeedback(.impact(weight: .light), trigger: flash) { _, new in new }
         .task {
             UIApplication.shared.isIdleTimerDisabled = true
-            if let scene = UIApplication.shared.connectedScenes.first(where: { $0 is UIWindowScene }) as? UIWindowScene {
-                camera.follow(scene)
-            }
+            if let scene { camera.follow(scene) }
             apply(await camera.start())
+        }
+        .onChange(of: landscape) { _, landscape in
+            AppDelegate.orientationLock = landscape ? .landscapeRight : .portrait
+            scene?.keyWindow?.rootViewController?.setNeedsUpdateOfSupportedInterfaceOrientations()
         }
         .onChange(of: scenePhase) { _, phase in
             if phase != .active { stop() }
@@ -51,7 +88,7 @@ struct CamcorderView: View {
 
     private var viewfinder: some View {
         PreviewView(layer: camera.displayLayer)
-            .aspectRatio(4 / 3, contentMode: .fit)
+            .aspectRatio(portrait ? 3 / 4 : 4 / 3, contentMode: .fit)
             .overlay(Color.white.opacity(flash ? 0.85 : 0).animation(flash ? nil : .easeOut(duration: 0.25), value: flash))
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .overlay {
@@ -79,68 +116,106 @@ struct CamcorderView: View {
 
     private var leftPanel: some View {
         VStack(alignment: .leading, spacing: 22) {
-            HStack(spacing: 8) {
-                Circle()
-                    .fill(isRecording ? Self.recRed : Color(red: 0.2, green: 0.06, blue: 0.05))
-                    .frame(width: 8, height: 8)
-                    .overlay(Circle().strokeBorder(.black.opacity(0.7), lineWidth: 1))
-                    .shadow(color: Self.recRed.opacity(isRecording ? 0.7 : 0), radius: 4)
-                Text("REC").font(.system(size: 10, weight: .medium, design: .monospaced)).foregroundStyle(Self.label.opacity(0.4))
-            }
-            VStack(alignment: .leading, spacing: 3) {
-                Text("VHS")
-                    .font(.system(size: 22, weight: .heavy).width(.condensed))
-                    .foregroundStyle(Self.label.opacity(0.32))
-                Text("VIDEO HI-FI")
-                    .font(.system(size: 8, weight: .medium, design: .monospaced))
-                    .tracking(1.5)
-                    .foregroundStyle(Self.label.opacity(0.28))
-            }
+            recLED
+            brand(.leading)
             zoomColumn
         }
     }
 
-    private var rightPanel: some View {
-        VStack(spacing: 32) {
-            shutterButton
-            Button(action: capturePhoto) {
-                Image(systemName: "camera.fill")
-                    .font(.system(size: 17, weight: .medium))
-                    .foregroundStyle(Self.label.opacity(0.6))
-                    .frame(width: 48, height: 48)
-                    .background(Circle().fill(Color(red: 0.1, green: 0.095, blue: 0.09)))
-                    .overlay(Circle().strokeBorder(.black.opacity(0.7), lineWidth: 1.5))
-            }
-            .buttonStyle(ShutterStyle())
-            Button {
-                Task { apply(await camera.flipCamera()) }
-            } label: {
-                Image(systemName: "arrow.triangle.2.circlepath.camera")
-                    .font(.system(size: 18, weight: .medium))
-                    .foregroundStyle(Self.label.opacity(0.6))
-                    .frame(width: 48, height: 48)
-                    .background(Circle().fill(Color(red: 0.1, green: 0.095, blue: 0.09)))
-                    .overlay(Circle().strokeBorder(.black.opacity(0.7), lineWidth: 1.5))
-            }
-            .buttonStyle(ShutterStyle())
-            .disabled(isRecording)
-            .opacity(isRecording ? 0.3 : 1)
-
-            if hasTorch {
-                Button {
-                    torchOn.toggle()
-                    camera.setTorch(torchOn)
-                } label: {
-                    Image(systemName: torchOn ? "bolt.fill" : "bolt.slash")
-                        .font(.system(size: 16, weight: .medium))
-                        .foregroundStyle(torchOn ? Color(red: 0.95, green: 0.75, blue: 0.35) : Self.label.opacity(0.6))
-                        .frame(width: 48, height: 48)
-                        .background(Circle().fill(Color(red: 0.1, green: 0.095, blue: 0.09)))
-                        .overlay(Circle().strokeBorder(.black.opacity(0.7), lineWidth: 1.5))
-                }
-                .buttonStyle(ShutterStyle())
-            }
+    private var recLED: some View {
+        HStack(spacing: 8) {
+            Circle()
+                .fill(isRecording ? Self.recRed : Color(red: 0.2, green: 0.06, blue: 0.05))
+                .frame(width: 8, height: 8)
+                .overlay(Circle().strokeBorder(.black.opacity(0.7), lineWidth: 1))
+                .shadow(color: Self.recRed.opacity(isRecording ? 0.7 : 0), radius: 4)
+            Text("REC").font(.system(size: 10, weight: .medium, design: .monospaced)).foregroundStyle(Self.label.opacity(0.4))
         }
+    }
+
+    private func brand(_ alignment: HorizontalAlignment) -> some View {
+        VStack(alignment: alignment, spacing: 3) {
+            Text("VHS")
+                .font(.system(size: 22, weight: .heavy).width(.condensed))
+                .foregroundStyle(Self.label.opacity(0.32))
+            Text("VIDEO HI-FI")
+                .font(.system(size: 8, weight: .medium, design: .monospaced))
+                .tracking(1.5)
+                .foregroundStyle(Self.label.opacity(0.28))
+        }
+    }
+
+    private var rightPanel: some View {
+        // 84 + 4×48 + 4×20 = 356pt, under the shortest landscape height (~390pt).
+        VStack(spacing: 20) {
+            shutterButton
+            photoButton
+            flipButton
+            torchButton
+            orientationButton
+        }
+    }
+
+    /// Switches the whole interface between portrait and landscape; the device's physical orientation is ignored.
+    private var orientationButton: some View {
+        Button {
+            landscape.toggle()
+        } label: {
+            Image(systemName: portrait ? "rectangle.landscape.rotate" : "rectangle.portrait.rotate")
+                .font(.system(size: 17, weight: .medium))
+                .foregroundStyle(Self.label.opacity(0.6))
+                .frame(width: 48, height: 48)
+                .background(Circle().fill(Color(red: 0.1, green: 0.095, blue: 0.09)))
+                .overlay(Circle().strokeBorder(.black.opacity(0.7), lineWidth: 1.5))
+        }
+        .buttonStyle(ShutterStyle())
+        .disabled(isRecording)
+        .opacity(isRecording ? 0.3 : 1)
+    }
+
+    private var photoButton: some View {
+        Button(action: capturePhoto) {
+            Image(systemName: "camera.fill")
+                .font(.system(size: 17, weight: .medium))
+                .foregroundStyle(Self.label.opacity(0.6))
+                .frame(width: 48, height: 48)
+                .background(Circle().fill(Color(red: 0.1, green: 0.095, blue: 0.09)))
+                .overlay(Circle().strokeBorder(.black.opacity(0.7), lineWidth: 1.5))
+        }
+        .buttonStyle(ShutterStyle())
+    }
+
+    private var flipButton: some View {
+        Button {
+            Task { apply(await camera.flipCamera()) }
+        } label: {
+            Image(systemName: "arrow.triangle.2.circlepath.camera")
+                .font(.system(size: 18, weight: .medium))
+                .foregroundStyle(Self.label.opacity(0.6))
+                .frame(width: 48, height: 48)
+                .background(Circle().fill(Color(red: 0.1, green: 0.095, blue: 0.09)))
+                .overlay(Circle().strokeBorder(.black.opacity(0.7), lineWidth: 1.5))
+        }
+        .buttonStyle(ShutterStyle())
+        .disabled(isRecording)
+        .opacity(isRecording ? 0.3 : 1)
+    }
+
+    private var torchButton: some View {
+        Button {
+            torchOn.toggle()
+            camera.setTorch(torchOn)
+        } label: {
+            Image(systemName: torchOn ? "bolt.fill" : "bolt.slash")
+                .font(.system(size: 16, weight: .medium))
+                .foregroundStyle(torchOn ? Color(red: 0.95, green: 0.75, blue: 0.35) : Self.label.opacity(0.6))
+                .frame(width: 48, height: 48)
+                .background(Circle().fill(Color(red: 0.1, green: 0.095, blue: 0.09)))
+                .overlay(Circle().strokeBorder(.black.opacity(0.7), lineWidth: 1.5))
+        }
+        .buttonStyle(ShutterStyle())
+        .disabled(!hasTorch)
+        .opacity(hasTorch ? 1 : 0.3)
     }
 
     /// Resets per-camera UI state after start or flip.
@@ -154,11 +229,13 @@ struct CamcorderView: View {
     // MARK: Zoom
 
     private var zoomColumn: some View {
-        let presets = Self.zoomPresets.filter { zoomRange.contains($0) }
-        let active = presets.last { $0 <= zoom + 0.01 } ?? presets.first
-        return VStack(alignment: .leading, spacing: 4) {
+        let presets = Self.zoomPresets
+        let active = presets.filter(zoomRange.contains).last { $0 <= zoom + 0.01 } ?? presets.first
+        let layout = portrait ? AnyLayout(HStackLayout(spacing: 4)) : AnyLayout(VStackLayout(alignment: .leading, spacing: 4))
+        return layout {
             ForEach(presets, id: \.self) { preset in
                 let isActive = preset == active
+                let available = zoomRange.contains(preset)
                 Button {
                     zoom = preset
                     camera.setZoom(preset, ramped: true)
@@ -171,9 +248,10 @@ struct CamcorderView: View {
                         .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(Self.label.opacity(isActive ? 0.35 : 0.08), lineWidth: 1))
                 }
                 .buttonStyle(.plain)
+                .disabled(!available)
+                .opacity(available ? 1 : 0.3)
             }
         }
-        .opacity(presets.count > 1 ? 1 : 0)
         .animation(.easeInOut(duration: 0.15), value: active)
     }
 
@@ -215,23 +293,23 @@ struct CamcorderView: View {
     // MARK: Last shot
 
     private var thumbnail: some View {
-        Group {
-            if let lastShot {
-                Button {
-                    openURL(URL(string: "photos-redirect://")!)
-                } label: {
-                    Image(uiImage: lastShot)
-                        .resizable()
-                        .aspectRatio(4 / 3, contentMode: .fit)
-                        .frame(width: 64)
-                        .clipShape(RoundedRectangle(cornerRadius: 4))
-                        .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(Self.label.opacity(0.35), lineWidth: 1))
-                        .shadow(color: .black.opacity(0.5), radius: 4, y: 2)
+        Button {
+            openURL(URL(string: "photos-redirect://")!)
+        } label: {
+            Color.black
+                .frame(width: portrait ? 48 : 64, height: portrait ? 64 : 48)
+                .overlay {
+                    if let lastShot {
+                        Image(uiImage: lastShot).resizable().scaledToFill()
+                            .transition(.opacity)
+                    }
                 }
-                .buttonStyle(ShutterStyle())
-                .transition(.scale.combined(with: .opacity))
-            }
+                .clipShape(RoundedRectangle(cornerRadius: 4))
+                .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(Self.label.opacity(0.35), lineWidth: 1))
+                .shadow(color: .black.opacity(0.5), radius: 4, y: 2)
         }
+        .buttonStyle(ShutterStyle())
+        .disabled(lastShot == nil)
         .animation(.spring(duration: 0.35), value: lastShot)
     }
 

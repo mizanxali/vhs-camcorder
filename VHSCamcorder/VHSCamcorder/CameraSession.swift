@@ -17,7 +17,7 @@ nonisolated final class CameraSession: NSObject, AVCaptureVideoDataOutputSampleB
     private var photoRequest: CheckedContinuation<(jpeg: Data, thumbnail: UIImage)?, Never>?   // queue only, fulfilled by the next frame
     private var clipThumbnail: UIImage?    // queue only, first frame of the active recording
     private var position: AVCaptureDevice.Position = .back   // queue only
-    private var rotationAngle: CGFloat = 0                    // queue only, for the back camera
+    private var rotationAngle: CGFloat = 0                    // queue only, for the back camera; held while recording
     private var device: AVCaptureDevice?                      // queue only, current video device
     private var wideFactor: CGFloat = 1                       // queue only, videoZoomFactor that displays as 1x
     @MainActor private var geometryObservation: NSKeyValueObservation?
@@ -43,6 +43,7 @@ nonisolated final class CameraSession: NSObject, AVCaptureVideoDataOutputSampleB
         _ = await AVCaptureDevice.requestAccess(for: .audio)
         return await onQueue {
             self.configure()
+            self.applyRotation()
             self.session.startRunning()
             return self.capabilities
         }
@@ -142,13 +143,20 @@ nonisolated final class CameraSession: NSObject, AVCaptureVideoDataOutputSampleB
         }
     }
 
-    /// Keeps captured frames upright by following the scene's interface orientation (landscape only).
+    /// Keeps captured frames upright by following the scene's interface orientation.
     @MainActor func follow(_ scene: UIWindowScene) {
         geometryObservation = scene.observe(\.effectiveGeometry, options: [.initial, .new]) { [weak self] scene, _ in
             let orientation = MainActor.assumeIsolated { scene.effectiveGeometry.interfaceOrientation }
             self?.queue.async {
-                self?.rotationAngle = orientation == .landscapeLeft ? 180 : 0
-                self?.applyRotation()
+                guard let self else { return }
+                switch orientation {
+                case .portrait: self.rotationAngle = 90
+                case .landscapeLeft: self.rotationAngle = 180
+                case .portraitUpsideDown: self.rotationAngle = 270
+                default: self.rotationAngle = 0
+                }
+                // A clip keeps the orientation it started in; stopRecording catches up.
+                if self.recorder == nil { self.applyRotation() }
             }
         }
     }
@@ -156,8 +164,9 @@ nonisolated final class CameraSession: NSObject, AVCaptureVideoDataOutputSampleB
     /// Queue only. The connection is recreated on every input change, so this runs after flips too.
     private func applyRotation() {
         guard let connection = videoOutput.connection(with: .video) else { return }
+        filter.outputSize = rotationAngle.truncatingRemainder(dividingBy: 180) == 90 ? VHSFilter.portrait : VHSFilter.landscape
         // The front sensor is mounted 180° from the back one.
-        let angle = position == .front ? 180 - rotationAngle : rotationAngle
+        let angle = position == .front ? (540 - rotationAngle).truncatingRemainder(dividingBy: 360) : rotationAngle
         if connection.isVideoRotationAngleSupported(angle) {
             connection.videoRotationAngle = angle
         }
@@ -174,8 +183,8 @@ nonisolated final class CameraSession: NSObject, AVCaptureVideoDataOutputSampleB
             guard self.recorder == nil,
                   var videoSettings = self.videoOutput.recommendedVideoSettingsForAssetWriter(writingTo: .mov),
                   let audioSettings = self.audioOutput.recommendedAudioSettingsForAssetWriter(writingTo: .mov) else { return }
-            videoSettings[AVVideoWidthKey] = Int(VHSFilter.outputSize.width)
-            videoSettings[AVVideoHeightKey] = Int(VHSFilter.outputSize.height)
+            videoSettings[AVVideoWidthKey] = Int(self.filter.outputSize.width)
+            videoSettings[AVVideoHeightKey] = Int(self.filter.outputSize.height)
             self.recorder = try? VideoRecorder(videoSettings: videoSettings, audioSettings: audioSettings)
         }
         return true
@@ -184,7 +193,7 @@ nonisolated final class CameraSession: NSObject, AVCaptureVideoDataOutputSampleB
     /// Finalizes the clip and returns its thumbnail once it is saved to Photos, nil on failure.
     func stopRecording() async -> UIImage? {
         let (recorder, thumbnail): (VideoRecorder?, UIImage?) = queue.sync {
-            defer { self.recorder = nil; self.clipThumbnail = nil }
+            defer { self.recorder = nil; self.clipThumbnail = nil; self.applyRotation() }
             return (self.recorder, self.clipThumbnail)
         }
         guard let recorder, await recorder.finish() else { return nil }

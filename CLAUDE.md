@@ -1,6 +1,6 @@
 # VHS Camcorder
 
-Native iOS app (SwiftUI, iOS 26+, iPhone only, landscape only) that records video through a live VHS filter and saves it to Photos. One filter, one mode. The project lives one level down at `VHSCamcorder/VHSCamcorder.xcodeproj`, bundle id `com.mizanxali.VHSCamcorder`.
+Native iOS app (SwiftUI, iOS 26+, iPhone only, landscape or portrait) that records video through a live VHS filter and saves it to Photos. One filter, one mode. The project lives one level down at `VHSCamcorder/VHSCamcorder.xcodeproj`, bundle id `com.mizanxali.VHSCamcorder`.
 
 ## How it works
 
@@ -9,7 +9,7 @@ One frame path, rendered once, fanned out to two consumers:
 ```
 AVCaptureSession (virtual multi-lens back camera or front camera, 1080p30 BGRA, mic)
   └─ CameraSession (delegate on a serial queue)
-       CIImage → scale + center-crop to 1440x1080 (4:3) → OSD overlay composited → VHS CIKernel
+       CIImage → aspect-fill crop to 1440x1080 (4:3) or 1080x1440 (3:4 portrait) → OSD overlay composited → VHS CIKernel
        CIContext.render(to: pooled CVPixelBuffer)
          ├─ AVSampleBufferDisplayLayer   (preview; shows exactly what gets encoded)
          └─ VideoRecorder                (AVAssetWriter H.264 + AAC → temp .mov → Photos)
@@ -49,7 +49,7 @@ There is a second, stale `VHSCamcorder-*` folder in DerivedData. Do not glob; us
 - **Sampler space is not pixel space.** In the kernel, do all coordinate math on `dest.coord()` and sample through `src.transform(...)`. Adding pixel offsets to `src.coord()` clamps every tap to the edge and smears each row into one color.
 - **Default MainActor isolation is on** (Swift approachable concurrency). Classes that run on the capture queue are declared `nonisolated` and `@unchecked Sendable`; anything touching UIKit or the display layer's init is `@MainActor`.
 - **Virtual camera zoom factors.** On the triple/dual-wide device, raw `videoZoomFactor` 1 is the ultra-wide. `CameraSession` records the first `virtualDeviceSwitchOverVideoZoomFactors` entry as "1x" and exposes display factors (0.5x, 1x, 2x, 3x) to the UI. Digital zoom is capped at 10x.
-- **Front camera rotation.** The front sensor is mounted 180° from the back one, handled in `applyRotation()`. The connection is recreated on every input change, so rotation and mirroring are reapplied after each flip.
+- **Orientation.** `CameraSession` rotates the capture connection (0/90/180/270) and sets `filter.outputSize`. The front sensor is mounted 180° from the back one, handled in `applyRotation()`. The connection is recreated on every input change, so rotation and mirroring are reapplied after each flip. A clip keeps the orientation it started in; rotation changes are held until `stopRecording()`. There is no auto-rotate: `AppDelegate.orientationLock` is `.portrait` or `.landscapeRight`, flipped only by the orientation button in `CamcorderView` (disabled while recording). The UI switches on `verticalSizeClass`.
 - **Recording stop is async** and returns the Photos save result. The toast waits on it, so it appears a beat after the button press.
 
 ## Working conventions

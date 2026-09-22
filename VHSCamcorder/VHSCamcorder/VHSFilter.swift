@@ -4,14 +4,17 @@ import ImageIO
 import QuartzCore
 import UIKit
 
-/// Turns a raw camera frame into the 4:3 VHS output frame. Rendered once per frame into a pooled buffer.
+/// Turns a raw camera frame into the VHS output frame (4:3 landscape or 3:4 portrait). Rendered once per frame into a pooled buffer.
 nonisolated final class VHSFilter {
-    static let outputSize = CGSize(width: 1440, height: 1080)
+    static let landscape = CGSize(width: 1440, height: 1080)
+    static let portrait = CGSize(width: 1080, height: 1440)
+    /// Set from the camera queue when the interface rotates; frames of any size are aspect-filled into it.
+    var outputSize = landscape
 
     private let context = CIContext()
     private let kernel: CIKernel
     private let startTime = CACurrentMediaTime()
-    private var pool: CVPixelBufferPool?
+    private var pool: (size: CGSize, pool: CVPixelBufferPool)?
     private let overlay = OverlayRenderer()
 
     init() {
@@ -21,23 +24,24 @@ nonisolated final class VHSFilter {
 
     /// `elapsed` is nil when idle, otherwise seconds since recording started (drives the REC overlay).
     func render(_ input: CVPixelBuffer, elapsed: TimeInterval?) -> CVPixelBuffer? {
+        let size = outputSize
         let source = CIImage(cvPixelBuffer: input)
-        let scale = Self.outputSize.height / source.extent.height
+        let scale = max(size.width / source.extent.width, size.height / source.extent.height)
         let scaled = source.transformed(by: .init(scaleX: scale, y: scale))
-        let cropX = (scaled.extent.width - Self.outputSize.width) / 2
+        let crop = CGPoint(x: (scaled.extent.width - size.width) / 2, y: (scaled.extent.height - size.height) / 2)
         let cropped = scaled
-            .cropped(to: CGRect(origin: CGPoint(x: cropX, y: 0), size: Self.outputSize))
-            .transformed(by: .init(translationX: -cropX, y: 0))
-        let composed = overlay.image(elapsed: elapsed, size: Self.outputSize)
+            .cropped(to: CGRect(origin: crop, size: size))
+            .transformed(by: .init(translationX: -crop.x, y: -crop.y))
+        let composed = overlay.image(elapsed: elapsed, size: size)
             .composited(over: cropped)
             .clampedToExtent()
 
-        let extent = CGRect(origin: .zero, size: Self.outputSize)
+        let extent = CGRect(origin: .zero, size: size)
         guard let image = kernel.apply(
             extent: extent,
             roiCallback: { _, rect in rect.insetBy(dx: -80, dy: -2) },
             arguments: [composed, Float(CACurrentMediaTime() - startTime), Float(extent.width), Float(extent.height)]
-        ), let output = makeBuffer() else { return nil }
+        ), let output = makeBuffer(size) else { return nil }
         context.render(image, to: output)
         return output
     }
@@ -57,20 +61,22 @@ nonisolated final class VHSFilter {
         return context.createCGImage(image, from: image.extent).map { UIImage(cgImage: $0) }
     }
 
-    private func makeBuffer() -> CVPixelBuffer? {
-        if pool == nil {
+    private func makeBuffer(_ size: CGSize) -> CVPixelBuffer? {
+        if pool?.size != size {
             let attrs: [String: Any] = [
                 kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
-                kCVPixelBufferWidthKey as String: Int(Self.outputSize.width),
-                kCVPixelBufferHeightKey as String: Int(Self.outputSize.height),
+                kCVPixelBufferWidthKey as String: Int(size.width),
+                kCVPixelBufferHeightKey as String: Int(size.height),
                 kCVPixelBufferIOSurfacePropertiesKey as String: [:] as [String: Any],
                 kCVPixelBufferMetalCompatibilityKey as String: true,
             ]
-            CVPixelBufferPoolCreate(nil, nil, attrs as CFDictionary, &pool)
+            var created: CVPixelBufferPool?
+            CVPixelBufferPoolCreate(nil, nil, attrs as CFDictionary, &created)
+            pool = created.map { (size, $0) }
         }
         guard let pool else { return nil }
         var buffer: CVPixelBuffer?
-        CVPixelBufferPoolCreatePixelBuffer(nil, pool, &buffer)
+        CVPixelBufferPoolCreatePixelBuffer(nil, pool.pool, &buffer)
         return buffer
     }
 }
