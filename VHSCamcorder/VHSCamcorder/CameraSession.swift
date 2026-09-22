@@ -14,7 +14,8 @@ nonisolated final class CameraSession: NSObject, AVCaptureVideoDataOutputSampleB
     private let queue = DispatchQueue(label: "camera.frames")
     private let filter = VHSFilter()
     private var recorder: VideoRecorder?   // touched only on `queue`
-    private var photoRequest: CheckedContinuation<Data?, Never>?   // queue only, fulfilled by the next frame
+    private var photoRequest: CheckedContinuation<(jpeg: Data, thumbnail: UIImage)?, Never>?   // queue only, fulfilled by the next frame
+    private var clipThumbnail: UIImage?    // queue only, first frame of the active recording
     private var position: AVCaptureDevice.Position = .back   // queue only
     private var rotationAngle: CGFloat = 0                    // queue only, for the back camera
     private var device: AVCaptureDevice?                      // queue only, current video device
@@ -180,35 +181,35 @@ nonisolated final class CameraSession: NSObject, AVCaptureVideoDataOutputSampleB
         return true
     }
 
-    /// Finalizes the clip and returns true once it is saved to Photos.
-    func stopRecording() async -> Bool {
-        let recorder: VideoRecorder? = queue.sync {
-            defer { self.recorder = nil }
-            return self.recorder
+    /// Finalizes the clip and returns its thumbnail once it is saved to Photos, nil on failure.
+    func stopRecording() async -> UIImage? {
+        let (recorder, thumbnail): (VideoRecorder?, UIImage?) = queue.sync {
+            defer { self.recorder = nil; self.clipThumbnail = nil }
+            return (self.recorder, self.clipThumbnail)
         }
-        guard let recorder else { return false }
-        return await recorder.finish()
+        guard let recorder, await recorder.finish() else { return nil }
+        return thumbnail
     }
 
     // MARK: Photo
 
-    /// Saves the next rendered frame to Photos as a JPEG. Returns true once it is there.
-    func capturePhoto() async -> Bool {
-        guard await PHPhotoLibrary.requestAuthorization(for: .addOnly) == .authorized else { return false }
-        let data: Data? = await withCheckedContinuation { continuation in
+    /// Saves the next rendered frame to Photos as a JPEG. Returns its thumbnail once it is there, nil on failure.
+    func capturePhoto() async -> UIImage? {
+        guard await PHPhotoLibrary.requestAuthorization(for: .addOnly) == .authorized else { return nil }
+        let photo: (jpeg: Data, thumbnail: UIImage)? = await withCheckedContinuation { continuation in
             queue.async {
                 guard self.session.isRunning, self.photoRequest == nil else { return continuation.resume(returning: nil) }
                 self.photoRequest = continuation
             }
         }
-        guard let data else { return false }
+        guard let photo else { return nil }
         do {
             try await PHPhotoLibrary.shared().performChanges {
-                PHAssetCreationRequest.forAsset().addResource(with: .photo, data: data, options: nil)
+                PHAssetCreationRequest.forAsset().addResource(with: .photo, data: photo.jpeg, options: nil)
             }
-            return true
+            return photo.thumbnail
         } catch {
-            return false
+            return nil
         }
     }
 
@@ -228,10 +229,17 @@ nonisolated final class CameraSession: NSObject, AVCaptureVideoDataOutputSampleB
                 formatDescription: CMVideoFormatDescription(imageBuffer: rendered),
                 sampleTiming: CMSampleTimingInfo(duration: .invalid, presentationTimeStamp: time, decodeTimeStamp: .invalid)
               ) else { return }
-        recorder?.append(video: rendered, at: time)
+        if let recorder {
+            if recorder.startTime == nil { clipThumbnail = filter.thumbnail(rendered) }
+            recorder.append(video: rendered, at: time)
+        }
         if let photoRequest {
             self.photoRequest = nil
-            photoRequest.resume(returning: filter.jpeg(rendered))
+            if let jpeg = filter.jpeg(rendered), let thumbnail = filter.thumbnail(rendered) {
+                photoRequest.resume(returning: (jpeg, thumbnail))
+            } else {
+                photoRequest.resume(returning: nil)
+            }
         }
 
         display.sampleAttachments[0][.displayImmediately] = true

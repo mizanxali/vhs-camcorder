@@ -9,6 +9,7 @@ struct CamcorderView: View {
     private static let recRed = Color(red: 0.82, green: 0.16, blue: 0.1)
 
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.openURL) private var openURL
     @State private var camera = CameraSession()
     @State private var isRecording = false
     @State private var toast: String?
@@ -18,6 +19,7 @@ struct CamcorderView: View {
     @State private var torchOn = false
     @State private var pinchBase: CGFloat?
     @State private var flash = false
+    @State private var lastShot: UIImage?
     private static let zoomPresets: [CGFloat] = [0.5, 1, 2, 3]
 
     var body: some View {
@@ -29,6 +31,7 @@ struct CamcorderView: View {
         .overlay(alignment: .leading) { leftPanel.padding(.leading, 28) }
         .overlay(alignment: .trailing) { rightPanel.padding(.trailing, 28) }
         .overlay(alignment: .top) { toastView.padding(.top, 16) }
+        .overlay(alignment: .bottomLeading) { thumbnail.padding(.leading, 28).padding(.bottom, 16) }
         .sensoryFeedback(.impact, trigger: isRecording)
         .sensoryFeedback(.impact(weight: .light), trigger: flash) { _, new in new }
         .task {
@@ -209,6 +212,29 @@ struct CamcorderView: View {
         }
     }
 
+    // MARK: Last shot
+
+    private var thumbnail: some View {
+        Group {
+            if let lastShot {
+                Button {
+                    openURL(URL(string: "photos-redirect://")!)
+                } label: {
+                    Image(uiImage: lastShot)
+                        .resizable()
+                        .aspectRatio(4 / 3, contentMode: .fit)
+                        .frame(width: 64)
+                        .clipShape(RoundedRectangle(cornerRadius: 4))
+                        .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(Self.label.opacity(0.35), lineWidth: 1))
+                        .shadow(color: .black.opacity(0.5), radius: 4, y: 2)
+                }
+                .buttonStyle(ShutterStyle())
+                .transition(.scale.combined(with: .opacity))
+            }
+        }
+        .animation(.spring(duration: 0.35), value: lastShot)
+    }
+
     // MARK: Toast
 
     private var toastView: some View {
@@ -229,17 +255,22 @@ struct CamcorderView: View {
     private func stop() {
         guard isRecording else { return }
         isRecording = false
-        Task { show(await camera.stopRecording() ? "SAVED TO PHOTOS" : "SAVE FAILED") }
+        Task { saved(await camera.stopRecording(), "SAVED TO PHOTOS") }
     }
 
     private func capturePhoto() {
         guard !flash else { return }
         flash = true
         Task {
-            let saved = await camera.capturePhoto()
+            let shot = await camera.capturePhoto()
             flash = false
-            show(saved ? "PHOTO SAVED" : "SAVE FAILED")
+            saved(shot, "PHOTO SAVED")
         }
+    }
+
+    private func saved(_ thumbnail: UIImage?, _ message: String) {
+        if let thumbnail { lastShot = thumbnail }
+        show(thumbnail != nil ? message : "SAVE FAILED")
     }
 
     private func show(_ message: String) {
