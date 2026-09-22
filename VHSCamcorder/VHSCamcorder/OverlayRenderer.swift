@@ -5,6 +5,13 @@ import UIKit
 nonisolated final class OverlayRenderer {
     private var cached: (key: String, image: CIImage)?
 
+    private static let font: UIFont = {
+        if let url = Bundle.main.url(forResource: "VCR OSD Mono", withExtension: "ttf") {
+            CTFontManagerRegisterFontsForURL(url as CFURL, .process, nil)
+        }
+        return UIFont(name: "VCROSDMono", size: 52) ?? .monospacedSystemFont(ofSize: 48, weight: .bold)
+    }()
+
     private static let dateFormatter: DateFormatter = {
         let f = DateFormatter()
         f.locale = Locale(identifier: "en_US")
@@ -24,7 +31,7 @@ nonisolated final class OverlayRenderer {
         format.scale = 1
         format.opaque = false
         let rendered = UIGraphicsImageRenderer(size: size, format: format).image { _ in
-            let font = UIFont.monospacedSystemFont(ofSize: 48, weight: .bold)
+            let font = Self.font
             let shadow = NSShadow()
             shadow.shadowColor = UIColor.black.withAlphaComponent(0.8)
             shadow.shadowOffset = CGSize(width: 3, height: 3)

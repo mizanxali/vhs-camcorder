@@ -1,5 +1,6 @@
 import CoreImage
 import CoreVideo
+import ImageIO
 import QuartzCore
 
 /// Turns a raw camera frame into the 4:3 VHS output frame. Rendered once per frame into a pooled buffer.
@@ -38,6 +39,15 @@ nonisolated final class VHSFilter {
         ), let output = makeBuffer() else { return nil }
         context.render(image, to: output)
         return output
+    }
+
+    /// JPEG of a frame this filter rendered, for stills.
+    func jpeg(_ buffer: CVPixelBuffer) -> Data? {
+        context.jpegRepresentation(
+            of: CIImage(cvPixelBuffer: buffer),
+            colorSpace: CGColorSpace(name: CGColorSpace.sRGB)!,
+            options: [CIImageRepresentationOption(rawValue: kCGImageDestinationLossyCompressionQuality as String): 0.9]
+        )
     }
 
     private func makeBuffer() -> CVPixelBuffer? {

@@ -17,6 +17,7 @@ struct CamcorderView: View {
     @State private var hasTorch = false
     @State private var torchOn = false
     @State private var pinchBase: CGFloat?
+    @State private var flash = false
     private static let zoomPresets: [CGFloat] = [0.5, 1, 2, 3]
 
     var body: some View {
@@ -29,6 +30,7 @@ struct CamcorderView: View {
         .overlay(alignment: .trailing) { rightPanel.padding(.trailing, 28) }
         .overlay(alignment: .top) { toastView.padding(.top, 16) }
         .sensoryFeedback(.impact, trigger: isRecording)
+        .sensoryFeedback(.impact(weight: .light), trigger: flash) { _, new in new }
         .task {
             UIApplication.shared.isIdleTimerDisabled = true
             if let scene = UIApplication.shared.connectedScenes.first(where: { $0 is UIWindowScene }) as? UIWindowScene {
@@ -47,6 +49,7 @@ struct CamcorderView: View {
     private var viewfinder: some View {
         PreviewView(layer: camera.displayLayer)
             .aspectRatio(4 / 3, contentMode: .fit)
+            .overlay(Color.white.opacity(flash ? 0.85 : 0).animation(flash ? nil : .easeOut(duration: 0.25), value: flash))
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .overlay {
                 RoundedRectangle(cornerRadius: 8).strokeBorder(.black.opacity(0.85), lineWidth: 3)
@@ -97,6 +100,15 @@ struct CamcorderView: View {
     private var rightPanel: some View {
         VStack(spacing: 32) {
             shutterButton
+            Button(action: capturePhoto) {
+                Image(systemName: "camera.fill")
+                    .font(.system(size: 17, weight: .medium))
+                    .foregroundStyle(Self.label.opacity(0.6))
+                    .frame(width: 48, height: 48)
+                    .background(Circle().fill(Color(red: 0.1, green: 0.095, blue: 0.09)))
+                    .overlay(Circle().strokeBorder(.black.opacity(0.7), lineWidth: 1.5))
+            }
+            .buttonStyle(ShutterStyle())
             Button {
                 Task { apply(await camera.flipCamera()) }
             } label: {
@@ -217,10 +229,24 @@ struct CamcorderView: View {
     private func stop() {
         guard isRecording else { return }
         isRecording = false
+        Task { show(await camera.stopRecording() ? "SAVED TO PHOTOS" : "SAVE FAILED") }
+    }
+
+    private func capturePhoto() {
+        guard !flash else { return }
+        flash = true
         Task {
-            toast = await camera.stopRecording() ? "SAVED TO PHOTOS" : "SAVE FAILED"
+            let saved = await camera.capturePhoto()
+            flash = false
+            show(saved ? "PHOTO SAVED" : "SAVE FAILED")
+        }
+    }
+
+    private func show(_ message: String) {
+        toast = message
+        Task {
             try? await Task.sleep(for: .seconds(2))
-            toast = nil
+            if toast == message { toast = nil }
         }
     }
 }

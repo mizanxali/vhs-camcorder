@@ -14,6 +14,7 @@ nonisolated final class CameraSession: NSObject, AVCaptureVideoDataOutputSampleB
     private let queue = DispatchQueue(label: "camera.frames")
     private let filter = VHSFilter()
     private var recorder: VideoRecorder?   // touched only on `queue`
+    private var photoRequest: CheckedContinuation<Data?, Never>?   // queue only, fulfilled by the next frame
     private var position: AVCaptureDevice.Position = .back   // queue only
     private var rotationAngle: CGFloat = 0                    // queue only, for the back camera
     private var device: AVCaptureDevice?                      // queue only, current video device
@@ -189,6 +190,28 @@ nonisolated final class CameraSession: NSObject, AVCaptureVideoDataOutputSampleB
         return await recorder.finish()
     }
 
+    // MARK: Photo
+
+    /// Saves the next rendered frame to Photos as a JPEG. Returns true once it is there.
+    func capturePhoto() async -> Bool {
+        guard await PHPhotoLibrary.requestAuthorization(for: .addOnly) == .authorized else { return false }
+        let data: Data? = await withCheckedContinuation { continuation in
+            queue.async {
+                guard self.session.isRunning, self.photoRequest == nil else { return continuation.resume(returning: nil) }
+                self.photoRequest = continuation
+            }
+        }
+        guard let data else { return false }
+        do {
+            try await PHPhotoLibrary.shared().performChanges {
+                PHAssetCreationRequest.forAsset().addResource(with: .photo, data: data, options: nil)
+            }
+            return true
+        } catch {
+            return false
+        }
+    }
+
     // MARK: Capture callbacks (on `queue`)
 
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
@@ -206,6 +229,10 @@ nonisolated final class CameraSession: NSObject, AVCaptureVideoDataOutputSampleB
                 sampleTiming: CMSampleTimingInfo(duration: .invalid, presentationTimeStamp: time, decodeTimeStamp: .invalid)
               ) else { return }
         recorder?.append(video: rendered, at: time)
+        if let photoRequest {
+            self.photoRequest = nil
+            photoRequest.resume(returning: filter.jpeg(rendered))
+        }
 
         display.sampleAttachments[0][.displayImmediately] = true
         if renderer.status == .failed { renderer.flush() }
